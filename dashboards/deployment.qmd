@@ -1,0 +1,320 @@
+---
+title: "MLOps Deployment Guide"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+---
+
+# MLOps & Deployment Architecture
+
+This document describes the complete MLOps architecture and deployment pipeline for the project.
+
+## Architecture Overview
+
+### System Components
+
+1. **Data Layer (Cloud)**
+   - PostgreSQL database on Cloud SQL for structured data
+   - Cloud Storage buckets for raw data and model artifacts
+   - Automated data refresh pipelines
+
+2. **Model Training & Tracking**
+   - MLflow for experiment tracking and model registry
+   - Automated training pipelines via GitHub Actions
+   - Model versioning and promotion workflow
+
+3. **Model Serving**
+   - FastAPI application for online predictions
+   - REST API endpoints for model inference
+   - Deployed on Cloud Run for auto-scaling
+
+4. **Monitoring & Dashboard**
+   - Quarto dashboard for visualization
+   - Data drift detection with automated alerts
+   - Performance tracking and KPI monitoring
+
+## Deployment Pipeline
+
+### 1. Local Development
+
+```bash
+# Start local infrastructure
+docker-compose up -d
+
+# This starts:
+# - PostgreSQL database (port 5432)
+# - MLflow tracking server (port 5000)
+# - MinIO object storage (port 9000)
+# - FastAPI model service (port 8000)
+```
+
+### 2. Model Training
+
+#### Local Training
+```bash
+# Train model locally
+python src/models/train_mlflow.py
+
+# View experiments in MLflow
+open http://localhost:5000
+```
+
+#### Automated Training (GitHub Actions)
+- **Trigger**: Weekly schedule or manual dispatch
+- **Steps**:
+  1. Download latest training data from Cloud Storage
+  2. Train model with current configuration
+  3. Log experiments to MLflow
+  4. Save model metadata to database
+  5. Upload artifacts to Cloud Storage
+
+### 3. Model Deployment
+
+#### Promote Model to Production
+```python
+from src.utils.mlflow_utils import MLflowClient
+
+mlflow_client = MLflowClient("http://localhost:5000")
+await mlflow_client.promote_model_to_production(version="3")
+```
+
+#### API Deployment
+```bash
+# Build Docker image
+docker build -t mlops-api:latest .
+
+# Push to Container Registry
+docker tag mlops-api:latest gcr.io/PROJECT_ID/mlops-api:latest
+docker push gcr.io/PROJECT_ID/mlops-api:latest
+
+# Deploy to Cloud Run (automated via GitHub Actions)
+gcloud run deploy mlops-api \
+  --image gcr.io/PROJECT_ID/mlops-api:latest \
+  --region us-central1 \
+  --platform managed
+```
+
+### 4. Dashboard Deployment
+
+```bash
+# Render Quarto dashboard
+cd dashboards
+quarto render dashboard.qmd
+
+# Deploy to GitHub Pages (automated via CI/CD)
+# Dashboard is automatically updated on push to main
+```
+
+## Infrastructure as Code
+
+### Terraform Setup
+
+```bash
+cd infra/terraform
+
+# Initialize Terraform
+terraform init
+
+# Create terraform.tfvars from example
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your values
+
+# Plan deployment
+terraform plan
+
+# Apply infrastructure
+terraform apply
+```
+
+### Created Resources
+- Cloud SQL PostgreSQL instance
+- Cloud Storage buckets (data & models)
+- Cloud Run service for API
+- IAM service accounts and permissions
+
+## CI/CD Workflows
+
+### 1. Main CI/CD Pipeline (`.github/workflows/ci-cd.yml`)
+**Triggers**: Push to main, pull requests
+**Jobs**:
+- Run tests and linting
+- Build and push Docker image
+- Deploy API to Cloud Run
+- Render and deploy Quarto dashboard
+
+### 2. Model Training Pipeline (`.github/workflows/train-model.yml`)
+**Triggers**: Weekly schedule, manual dispatch
+**Jobs**:
+- Download training data
+- Train model with MLflow tracking
+- Upload model artifacts
+- Generate training report
+
+### 3. Drift Monitoring (`.github/workflows/drift-monitoring.yml`)
+**Triggers**: Daily schedule
+**Jobs**:
+- Download production data
+- Run drift detection analysis
+- Generate drift report
+- Send alerts if drift detected
+
+## API Endpoints
+
+### Health & Info
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Model information
+curl http://localhost:8000/model/info
+
+# List model versions
+curl http://localhost:8000/model/versions
+```
+
+### Predictions
+```bash
+# Single prediction
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"features": {"feature1": 1.0, "feature2": 2.0}}'
+
+# Batch predictions
+curl -X POST http://localhost:8000/predict/batch \
+  -H "Content-Type: application/json" \
+  -d '[
+    {"features": {"feature1": 1.0, "feature2": 2.0}},
+    {"features": {"feature1": 3.0, "feature2": 4.0}}
+  ]'
+```
+
+### Monitoring
+```bash
+# Latest performance metrics
+curl http://localhost:8000/metrics/latest
+
+# Drift detection status
+curl http://localhost:8000/drift/status
+```
+
+## Database Schema
+
+### Key Tables
+
+#### `model_metadata`
+Stores model version information, metrics, and production status.
+
+#### `predictions`
+Logs all predictions made by the API for monitoring.
+
+#### `drift_metrics`
+Tracks data drift indicators over time.
+
+#### `model_performance`
+Stores evaluation metrics for model versions.
+
+## Monitoring & Alerting
+
+### Data Drift Detection
+- **Method**: Statistical tests (KS test, PSI)
+- **Frequency**: Daily via GitHub Actions
+- **Alerts**: Triggered when drift threshold exceeded
+
+### Model Performance Tracking
+- **Metrics**: Accuracy, precision, recall, F1, ROC-AUC
+- **Storage**: Database + MLflow
+- **Visualization**: Quarto dashboard
+
+### System Health
+- **API Health**: `/health` endpoint
+- **Database**: Connection monitoring
+- **Model Load**: Verified on startup
+
+## Security & Best Practices
+
+### Secrets Management
+Store sensitive values in GitHub Secrets:
+- `GCP_SA_KEY`: Service account credentials
+- `GCP_PROJECT_ID`: GCP project identifier
+- `DATABASE_URL`: Database connection string
+- `MLFLOW_TRACKING_URI`: MLflow server URL
+
+### Environment Variables
+```bash
+# Required for API
+DATABASE_URL=postgresql://user:password@host:5432/mlops_data
+MLFLOW_TRACKING_URI=http://mlflow:5000
+MODEL_NAME=mlops-model
+ENVIRONMENT=production
+
+# Required for dashboard
+API_URL=https://api.example.com
+DATABASE_URL=postgresql://user:password@host:5432/mlops_data
+```
+
+### IAM Permissions
+Service accounts need:
+- Storage Object Admin (for GCS buckets)
+- Cloud SQL Client (for database access)
+- Cloud Run Admin (for deployment)
+
+## Troubleshooting
+
+### API Not Starting
+```bash
+# Check logs
+docker-compose logs api
+
+# Verify database connection
+docker-compose exec postgres psql -U mlops -d mlops_data -c "SELECT 1;"
+
+# Restart services
+docker-compose restart api
+```
+
+### Model Not Loading
+```bash
+# Check MLflow connection
+curl http://localhost:5000/api/2.0/mlflow/registered-models/list
+
+# Verify model exists
+python -c "from src.utils.mlflow_utils import MLflowClient; import asyncio; client = MLflowClient('http://localhost:5000'); print(asyncio.run(client.list_model_versions()))"
+```
+
+### Dashboard Rendering Issues
+```bash
+# Test locally
+cd dashboards
+quarto preview dashboard.qmd
+
+# Check Python dependencies
+pip install -r ../requirements.txt
+```
+
+## Cost Optimization
+
+### Cloud Run
+- Set min instances to 0 for auto-scaling
+- Use appropriate memory limits (512Mi sufficient)
+- Enable request-based scaling
+
+### Cloud SQL
+- Use smallest instance tier for development
+- Enable automatic backups with retention policy
+- Consider Cloud SQL Proxy for secure connections
+
+### Cloud Storage
+- Set lifecycle policies for old data/models
+- Use standard storage class for active data
+- Archive old artifacts after 90 days
+
+## Next Steps
+
+1. **Set up cloud infrastructure**: Run Terraform to provision resources
+2. **Configure GitHub secrets**: Add all required credentials
+3. **Train initial model**: Run training pipeline manually
+4. **Deploy API**: Merge to main to trigger deployment
+5. **Monitor dashboard**: Verify data flows and visualizations
+6. **Set up alerts**: Configure notifications for drift/failures

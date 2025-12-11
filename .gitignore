@@ -69,8 +69,10 @@ dmypy.json
 # Data files
 data/raw/*
 data/processed/*
+data/monitoring/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/monitoring/.gitkeep
 *.csv
 *.xlsx
 *.xls
@@ -91,6 +93,10 @@ models/saved_models/*
 *.onnx
 *.pb
 
+# MLflow
+mlruns/
+mlartifacts/
+
 # Quarto
 .quarto/
 _site/
@@ -110,8 +116,25 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+.env.*.local
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+!terraform.tfvars.example
+
+# Docker
+docker-compose.override.yml
+
+# Reports
+reports/
+*.html
 
 # Temporary files
 *.tmp
 *.temp
 ~$*
+

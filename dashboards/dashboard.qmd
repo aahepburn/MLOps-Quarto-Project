@@ -1,13 +1,702 @@
+---
+title: "MLOps Batch Model Dashboard"
+format:
+  dashboard:
+    theme: cosmo
+    orientation: rows
+    logo: ""
+    nav-buttons: [github]
+---
+
+```{python}
+#| context: setup
+import os
+import sys
+import json
 import pandas as pd
 import numpy as np
-from src.models.predict import make_predictions
-from src.utils.helpers import load_data
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime
+from pathlib import Path
+import joblib
 
-# Load processed data
-data = load_data('data/processed/processed_data.csv')
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Make predictions
-predictions = make_predictions(data)
+# Load model and metadata
+model_dir = Path(__file__).parent.parent / "models" / "saved_models"
+metadata_path = model_dir / "metadata_latest.json"
+model_path = model_dir / "model_latest.pkl"
 
-# Display predictions
-predictions.head()
+# Initialize data
+model = None
+metadata = None
+has_model = False
+
+if metadata_path.exists() and model_path.exists():
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    model = joblib.load(model_path)
+    has_model = True
+else:
+    print("⚠️ No trained model found. Please run: python src/models/train.py")
+
+# Try to load test data
+test_data_path = Path(__file__).parent.parent / "data" / "processed" / "test.csv"
+test_data = None
+if test_data_path.exists():
+    test_data = pd.read_csv(test_data_path)
+```
+
+# Model Overview {orientation="columns"}
+
+## Column {width="40%"}
+
+### Model Information
+
+```{python}
+#| title: "Current Model"
+
+if has_model:
+    model_info = pd.DataFrame([{
+        "Version": metadata.get('version', 'Unknown'),
+        "Training Date": metadata.get('training_date', 'Unknown'),
+        "Model Type": metadata.get('model_type', 'Unknown'),
+        "Features": len(metadata.get('features', []))
+    }])
+    
+    from itables import show
+    show(model_info, paging=False, searching=False)
+else:
+    print("No model loaded")
+```
+
+### Training Metrics
+
+```{python}
+#| title: "Model Performance"
+
+if has_model and 'metrics' in metadata:
+    metrics_df = pd.DataFrame([
+        {"Metric": k.replace('_', ' ').title(), "Value": f"{v:.4f}"}
+        for k, v in metadata['metrics'].items()
+    ])
+    
+    show(metrics_df, paging=False, searching=False)
+else:
+    print("No metrics available")
+```
+
+## Column {width="60%"}
+
+### Performance Visualization
+
+```{python}
+#| title: "Training Metrics"
+
+if has_model and 'metrics' in metadata:
+    metrics = metadata['metrics']
+    
+    fig = go.Figure(data=[
+        go.Bar(
+            x=list(metrics.keys()),
+            y=list(metrics.values()),
+            text=[f"{v:.3f}" for v in metrics.values()],
+            textposition='auto',
+            marker=dict(
+                color=['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#6A994E']
+            )
+        )
+    ])
+    
+    fig.update_layout(
+        xaxis_title="Metric",
+        yaxis_title="Score",
+        yaxis_range=[0, 1],
+        height=350
+    )
+    
+    fig.show()
+else:
+    print("No metrics to display")
+```
+
+# Predictions & Analysis {orientation="rows"}
+
+## Row {height="50%"}
+
+### Batch Predictions
+
+```{python}
+#| title: "Model Predictions on Test Set"
+
+if has_model and test_data is not None:
+    target_col = metadata.get('target', 'target')
+    
+    if target_col in test_data.columns:
+        X_test = test_data.drop(columns=[target_col])
+        y_test = test_data[target_col]
+        
+        # Make predictions
+        y_pred = model.predict(X_test)
+        
+        # Get probabilities if available
+        if hasattr(model, 'predict_proba'):
+            y_proba = model.predict_proba(X_test)
+            confidence = np.max(y_proba, axis=1)
+        else:
+            confidence = np.ones(len(y_pred))
+        
+        # Create results dataframe
+        results = pd.DataFrame({
+            'Actual': y_test.values,
+            'Predicted': y_pred,
+            'Confidence': confidence,
+            'Correct': y_test.values == y_pred
+        })
+        
+        # Show sample
+        show(results.head(20), paging=False, searching=False, maxBytes=0)
+    else:
+        print(f"Target column '{target_col}' not found in test data")
+else:
+    print("No test data available. Add data to data/processed/test.csv")
+```
+
+### Prediction Distribution
+
+```{python}
+#| title: "Prediction Confidence Distribution"
+
+if has_model and test_data is not None and target_col in test_data.columns:
+    fig = px.histogram(
+        results,
+        x='Confidence',
+        nbins=30,
+        color='Correct',
+        color_discrete_map={True: '#6A994E', False: '#C73E1D'},
+        title='Prediction Confidence by Correctness'
+    )
+    
+    fig.update_layout(
+        xaxis_title="Confidence",
+        yaxis_title="Count",
+        height=300
+    )
+    
+    fig.show()
+else:
+    print("No predictions available")
+```
+
+## Row {height="50%"}
+
+### Confusion Matrix
+
+```{python}
+#| title: "Prediction Accuracy"
+
+if has_model and test_data is not None and target_col in test_data.columns:
+    from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+    import matplotlib.pyplot as plt
+    
+    cm = confusion_matrix(y_test, y_pred)
+    
+    fig, ax = plt.subplots(figsize=(6, 4))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+    disp.plot(ax=ax, cmap='Blues', values_format='d')
+    plt.title('Confusion Matrix')
+    plt.tight_layout()
+    plt.show()
+else:
+    print("No predictions available")
+```
+
+### Feature Importance
+
+```{python}
+#| title: "Top Feature Importances"
+
+if has_model and hasattr(model, 'feature_importances_'):
+    features = metadata.get('features', [f"feature_{i}" for i in range(len(model.feature_importances_))])
+    
+    importance_df = pd.DataFrame({
+        'Feature': features,
+        'Importance': model.feature_importances_
+    }).sort_values('Importance', ascending=False).head(10)
+    
+    fig = px.bar(
+        importance_df,
+        x='Importance',
+        y='Feature',
+        orientation='h',
+        title='Top 10 Most Important Features'
+    )
+    
+    fig.update_layout(
+        yaxis={'categoryorder': 'total ascending'},
+        height=300
+    )
+    
+    fig.show()
+else:
+    print("Feature importance not available for this model type")
+```
+
+# Data Summary {orientation="columns"}
+
+## Column {width="50%"}
+
+### Dataset Statistics
+
+```{python}
+#| title: "Test Data Summary"
+
+if test_data is not None:
+    summary = pd.DataFrame({
+        'Metric': ['Total Samples', 'Features', 'Target Classes'],
+        'Value': [
+            len(test_data),
+            len(test_data.columns) - 1,
+            test_data[target_col].nunique() if target_col in test_data.columns else 'N/A'
+        ]
+    })
+    
+    show(summary, paging=False, searching=False)
+else:
+    print("No test data loaded")
+```
+
+### Model Parameters
+
+```{python}
+#| title: "Training Parameters"
+
+if has_model and 'parameters' in metadata:
+    params = metadata['parameters']
+    params_df = pd.DataFrame([
+        {"Parameter": k, "Value": str(v)}
+        for k, v in params.items()
+    ])
+    
+    show(params_df, paging=False, searching=False)
+else:
+    print("No parameters available")
+```
+
+## Column {width="50%"}
+
+### Key Performance Indicators
+
+```{python}
+#| title: "KPI Summary"
+
+if has_model and test_data is not None and target_col in test_data.columns:
+    accuracy = (results['Correct'].sum() / len(results)) * 100
+    avg_confidence = results['Confidence'].mean() * 100
+    
+    kpis = pd.DataFrame([
+        {"KPI": "Test Accuracy", "Value": f"{accuracy:.2f}%"},
+        {"KPI": "Avg Confidence", "Value": f"{avg_confidence:.2f}%"},
+        {"KPI": "Total Predictions", "Value": f"{len(results):,}"},
+        {"KPI": "Model Version", "Value": metadata.get('version', 'Unknown')}
+    ])
+    
+    show(kpis, paging=False, searching=False)
+else:
+    print("Run model training to see KPIs")
+```
+
+### Status
+
+```{python}
+#| title: "System Status"
+
+status = pd.DataFrame([
+    {"Component": "Model", "Status": "✅ Loaded" if has_model else "❌ Not Found"},
+    {"Component": "Test Data", "Status": "✅ Available" if test_data is not None else "⚠️ Missing"},
+    {"Component": "Predictions", "Status": "✅ Ready" if (has_model and test_data is not None) else "⏳ Waiting"}
+])
+
+show(status, paging=False, searching=False)
+```
+
+
+# Data & Model Status {orientation="columns"}
+
+## Column {width="33%"}
+
+### Model Information
+
+```{python}
+#| title: "Current Production Model"
+import asyncio
+
+async def get_model_info():
+    try:
+        response = requests.get(f"{API_URL}/model/info", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except:
+        return None
+
+model_info = asyncio.run(get_model_info())
+
+if model_info:
+    from itables import show
+    df = pd.DataFrame([{
+        "Model Name": model_info.get("model_name", "N/A"),
+        "Version": model_info.get("model_version", "N/A"),
+        "Training Date": model_info.get("training_date", "N/A"),
+        "Status": "Production" if model_info.get("is_production") else "Staging"
+    }])
+    show(df, paging=False, searching=False)
+else:
+    print("Model information unavailable")
+```
+
+### Model Metrics
+
+```{python}
+#| title: "Model Performance Metrics"
+
+if model_info and "metrics" in model_info:
+    metrics_data = []
+    for metric_name, metric_value in model_info["metrics"].items():
+        metrics_data.append({
+            "Metric": metric_name.replace("_", " ").title(),
+            "Value": f"{metric_value:.4f}"
+        })
+    
+    if metrics_data:
+        df_metrics = pd.DataFrame(metrics_data)
+        show(df_metrics, paging=False, searching=False)
+else:
+    print("Metrics unavailable")
+```
+
+## Column {width="33%"}
+
+### Data Status
+
+```{python}
+#| title: "Latest Data Refresh"
+
+async def get_data_refresh():
+    if data_access:
+        return await data_access.get_latest_data_refresh()
+    return None
+
+refresh_info = asyncio.run(get_data_refresh())
+
+if refresh_info:
+    df_refresh = pd.DataFrame([{
+        "Refresh Type": refresh_info.get("refresh_type", "N/A"),
+        "Status": refresh_info.get("status", "N/A"),
+        "Records Processed": refresh_info.get("records_processed", 0),
+        "Completed At": refresh_info.get("completed_at", "N/A")
+    }])
+    show(df_refresh, paging=False, searching=False)
+else:
+    print("Data refresh information unavailable")
+```
+
+### Health Status
+
+```{python}
+#| title: "System Health"
+
+async def check_health():
+    try:
+        response = requests.get(f"{API_URL}/health", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except:
+        return None
+
+health = asyncio.run(check_health())
+
+if health:
+    status_color = "green" if health.get("status") == "healthy" else "red"
+    df_health = pd.DataFrame([{
+        "API Status": health.get("status", "unknown").upper(),
+        "Model Loaded": "Yes" if health.get("model_loaded") else "No",
+        "Timestamp": health.get("timestamp", "N/A")
+    }])
+    show(df_health, paging=False, searching=False)
+else:
+    print("Health check failed - API may be offline")
+```
+
+## Column {width="34%"}
+
+### Drift Detection Status
+
+```{python}
+#| title: "Data Drift Indicators"
+
+async def get_drift_status():
+    try:
+        response = requests.get(f"{API_URL}/drift/status", timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except:
+        return None
+
+drift_status = asyncio.run(get_drift_status())
+
+if drift_status and "features" in drift_status:
+    drift_data = []
+    for feature in drift_status["features"][:5]:  # Show top 5
+        drift_data.append({
+            "Feature": feature.get("feature_name", "N/A"),
+            "Metric": feature.get("metric_type", "N/A"),
+            "Value": f"{feature.get('metric_value', 0):.4f}",
+            "Drift": "⚠️ Yes" if feature.get("is_drift_detected") else "✓ No"
+        })
+    
+    if drift_data:
+        df_drift = pd.DataFrame(drift_data)
+        show(df_drift, paging=False, searching=False)
+    else:
+        print("No drift data available")
+else:
+    print("Drift detection unavailable")
+```
+
+# Performance Monitoring {orientation="rows"}
+
+## Row {height="40%"}
+
+### Prediction vs Actual Over Time
+
+```{python}
+#| title: "Prediction Performance Trend"
+
+async def get_predictions():
+    if data_access:
+        return await data_access.get_latest_predictions(limit=100)
+    return []
+
+predictions = asyncio.run(get_predictions())
+
+if predictions:
+    df_pred = pd.DataFrame(predictions)
+    
+    # Create time series plot
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=df_pred['timestamp'],
+        y=df_pred['confidence'],
+        mode='lines+markers',
+        name='Prediction Confidence',
+        line=dict(color='blue', width=2)
+    ))
+    
+    fig.update_layout(
+        xaxis_title="Timestamp",
+        yaxis_title="Confidence",
+        hovermode='x unified',
+        height=300
+    )
+    
+    fig.show()
+else:
+    print("No prediction data available")
+```
+
+### Model Performance Over Time
+
+```{python}
+#| title: "Metrics Evolution"
+
+async def get_performance_history():
+    if data_access:
+        # Get performance metrics for multiple versions
+        return await data_access.get_latest_performance_metrics()
+    return []
+
+perf_history = asyncio.run(get_performance_history())
+
+if perf_history:
+    df_perf = pd.DataFrame(perf_history)
+    
+    # Create grouped bar chart
+    fig = px.bar(
+        df_perf,
+        x='metric_name',
+        y='metric_value',
+        color='model_version',
+        barmode='group',
+        title='Performance Metrics by Model Version'
+    )
+    
+    fig.update_layout(
+        xaxis_title="Metric",
+        yaxis_title="Value",
+        height=300
+    )
+    
+    fig.show()
+else:
+    print("No performance history available")
+```
+
+## Row {height="60%"}
+
+### Recent Predictions
+
+```{python}
+#| title: "Latest Predictions (Last 20)"
+
+if predictions:
+    df_recent = pd.DataFrame(predictions[:20])
+    
+    # Select relevant columns
+    display_cols = ['timestamp', 'model_version', 'confidence']
+    if all(col in df_recent.columns for col in display_cols):
+        df_display = df_recent[display_cols].copy()
+        df_display['timestamp'] = pd.to_datetime(df_display['timestamp'])
+        df_display['confidence'] = df_display['confidence'].apply(lambda x: f"{x:.2%}" if pd.notna(x) else "N/A")
+        
+        show(df_display, paging=False, searching=False, maxBytes=0)
+    else:
+        show(df_recent.head(20), paging=False)
+else:
+    print("No recent predictions available")
+```
+
+# Business Insights {orientation="columns"}
+
+## Column {width="50%"}
+
+### Prediction Distribution
+
+```{python}
+#| title: "Prediction Confidence Distribution"
+
+if predictions:
+    df_pred = pd.DataFrame(predictions)
+    
+    if 'confidence' in df_pred.columns:
+        fig = px.histogram(
+            df_pred,
+            x='confidence',
+            nbins=30,
+            title='Distribution of Prediction Confidence',
+            labels={'confidence': 'Confidence', 'count': 'Frequency'}
+        )
+        
+        fig.update_layout(height=400)
+        fig.show()
+    else:
+        print("Confidence data not available")
+else:
+    print("No prediction data available")
+```
+
+### Model Version Usage
+
+```{python}
+#| title: "Predictions by Model Version"
+
+if predictions:
+    df_pred = pd.DataFrame(predictions)
+    
+    if 'model_version' in df_pred.columns:
+        version_counts = df_pred['model_version'].value_counts().reset_index()
+        version_counts.columns = ['Model Version', 'Count']
+        
+        fig = px.pie(
+            version_counts,
+            values='Count',
+            names='Model Version',
+            title='Predictions by Model Version'
+        )
+        
+        fig.update_layout(height=400)
+        fig.show()
+    else:
+        print("Version data not available")
+else:
+    print("No prediction data available")
+```
+
+## Column {width="50%"}
+
+### Key Performance Indicators
+
+```{python}
+#| title: "KPI Summary"
+
+# Calculate KPIs
+if predictions:
+    df_pred = pd.DataFrame(predictions)
+    
+    total_predictions = len(df_pred)
+    avg_confidence = df_pred['confidence'].mean() if 'confidence' in df_pred.columns else 0
+    
+    # Recent predictions (last 24 hours)
+    if 'timestamp' in df_pred.columns:
+        df_pred['timestamp'] = pd.to_datetime(df_pred['timestamp'])
+        recent_cutoff = datetime.utcnow() - timedelta(hours=24)
+        recent_count = len(df_pred[df_pred['timestamp'] > recent_cutoff])
+    else:
+        recent_count = 0
+    
+    kpis = pd.DataFrame([
+        {"KPI": "Total Predictions", "Value": f"{total_predictions:,}"},
+        {"KPI": "Last 24h Predictions", "Value": f"{recent_count:,}"},
+        {"KPI": "Avg Confidence", "Value": f"{avg_confidence:.2%}"},
+        {"KPI": "Active Model Version", "Value": model_info.get("model_version", "N/A") if model_info else "N/A"}
+    ])
+    
+    show(kpis, paging=False, searching=False)
+else:
+    print("No KPI data available")
+```
+
+### System Alerts
+
+```{python}
+#| title: "Alerts & Warnings"
+
+alerts = []
+
+# Check for drift
+if drift_status and drift_status.get("drift_detected"):
+    alerts.append({
+        "Type": "⚠️ WARNING",
+        "Message": "Data drift detected in one or more features",
+        "Timestamp": drift_status.get("timestamp", "N/A")
+    })
+
+# Check model performance
+if model_info and "metrics" in model_info:
+    accuracy = model_info["metrics"].get("accuracy", 0)
+    if accuracy < 0.8:
+        alerts.append({
+            "Type": "⚠️ WARNING",
+            "Message": f"Model accuracy below threshold: {accuracy:.2%}",
+            "Timestamp": datetime.utcnow().isoformat()
+        })
+
+# Check API health
+if not health or health.get("status") != "healthy":
+    alerts.append({
+        "Type": "❌ ERROR",
+        "Message": "API health check failed",
+        "Timestamp": datetime.utcnow().isoformat()
+    })
+
+if alerts:
+    df_alerts = pd.DataFrame(alerts)
+    show(df_alerts, paging=False, searching=False)
+else:
+    print("✓ No alerts - All systems operational")
+```
