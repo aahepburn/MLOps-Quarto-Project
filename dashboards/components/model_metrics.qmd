@@ -1,0 +1,18 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Assuming model_metrics is a DataFrame containing the metrics
+model_metrics = pd.read_csv('path/to/your/model_metrics.csv')
+
+# Displaying the metrics
+model_metrics_summary = model_metrics.describe()
+
+# Plotting the metrics
+plt.figure(figsize=(10, 6))
+plt.bar(model_metrics['Metric'], model_metrics['Value'], color='skyblue')
+plt.title('Model Performance Metrics')
+plt.xlabel('Metrics')
+plt.ylabel('Values')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()

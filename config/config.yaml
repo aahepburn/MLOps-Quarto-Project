@@ -1,0 +1,24 @@
+# config.yaml
+
+project_name: "ML Quarto Project"
+version: "0.1.0"
+description: "A data science project with a Quarto dashboard for batch model scoring and an ML training pipeline."
+
+data:
+  raw_data_path: "data/raw/"
+  processed_data_path: "data/processed/"
+
+model:
+  model_save_path: "models/saved_models/"
+  model_type: "RandomForest"  # Example model type
+  hyperparameters:
+    n_estimators: 100
+    max_depth: 10
+    random_state: 42
+
+dashboard:
+  title: "Model Scoring Dashboard"
+  theme: "default"
+  components:
+    - "model_metrics.qmd"
+    - "predictions.qmd"
